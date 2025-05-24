@@ -15,29 +15,11 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
     let duration = start.elapsed();
     let api_latency = duration.as_millis();
     
-    let ws_latency = {
-        let data = ctx.data.read().await;
-        if let Some(shard_manager) = data.get::<ShardManagerContainer>() {
-            let shard_runners = shard_manager.runners.lock().await;
-            if let Some((_, info)) = shard_runners.iter().next() {
-                info.latency.map(|d| d.as_millis()).unwrap_or(0)
-            } else {
-                0
-            }
-        } else {
-            0
-        }
-    };
-    
-    info!("Ping results - API: {}ms, WebSocket: {}ms", api_latency, ws_latency);
+    info!("Ping result - API: {}ms", api_latency);
     
     let embed = CreateEmbed::new()
-        .title("Connection Status")
-        .color(0x00FF00)
-        .field("API Latency", format!("{}ms", api_latency), true)
-        .field("WebSocket Latency", format!("{}ms", ws_latency), true)
-        .field("Status", if api_latency < 100 { "Excellent" } else if api_latency < 300 { "Good" } else { "High" }, true)
-        .timestamp(Timestamp::now());
+        .description(format!("Latency: {}ms", api_latency))
+        .color(0x5865F2);
     
     command.edit_response(&http, EditInteractionResponse::new().embed(embed)).await?;
     
