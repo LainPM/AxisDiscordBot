@@ -3,6 +3,7 @@ use serenity::model::prelude::*;
 use serenity::prelude::*;
 use serenity::model::Timestamp;
 use tracing::info;
+use crate::bot::ShardManagerContainer;
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
     info!("Ping command executed by {}", command.user.tag());
@@ -15,11 +16,14 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
     let api_latency = duration.as_millis();
     
     let ws_latency = {
-        let shard_manager = ctx.shard_manager.lock().await;
-        let shard_runners = shard_manager.runners.lock().await;
-        
-        if let Some((_, info)) = shard_runners.iter().next() {
-            info.latency.map(|d| d.as_millis()).unwrap_or(0)
+        let data = ctx.data.read().await;
+        if let Some(shard_manager) = data.get::<ShardManagerContainer>() {
+            let shard_runners = shard_manager.runners.lock().await;
+            if let Some((_, info)) = shard_runners.iter().next() {
+                info.latency.map(|d| d.as_millis()).unwrap_or(0)
+            } else {
+                0
+            }
         } else {
             0
         }
