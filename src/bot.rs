@@ -120,16 +120,8 @@ impl EventHandler for Handler {
         info!("Bot ID: {}", ready.user.id);
         info!("Connected to {} guilds", ready.guilds.len());
         
-        let register_commands = vec![
-            commands::register_ping(),
-            commands::register_serverinfo(),
-            commands::register_membercount(),
-        ];
-
-        match Command::set_global_commands(&ctx.http, register_commands).await {
-            Ok(commands) => info!("Successfully registered {} application commands", commands.len()),
-            Err(e) => error!("Failed to register application commands: {}", e),
-        }
+        // Don't auto-sync commands - use manual !sync_all command instead
+        info!("Bot ready! Use !sync_all to manually sync slash commands.");
 
         // Start background task to cleanup expired conversations
         let conversations = self.active_conversations.clone();
@@ -183,7 +175,55 @@ impl EventHandler for Handler {
             return;
         }
 
-        debug!("Received message from {}: {}", msg.author.tag(), msg.content);
+        // Handle sync commands first (before other processing)
+        if msg.content.starts_with("!sync_all") {
+            info!("Sync command received from {}", msg.author.tag());
+            
+            // Check if user has admin permissions
+            if let Some(guild_id) = msg.guild_id {
+                match guild_id.member(&ctx.http, msg.author.id).await {
+                    Ok(member) => {
+                        if !member.permissions(&ctx.cache).map_or(false, |p| p.administrator()) {
+                            let _ = msg.reply(&ctx.http, "❌ You need Administrator permissions to sync commands.").await;
+                            return;
+                        }
+                    },
+                    Err(_) => {
+                        let _ = msg.reply(&ctx.http, "❌ Unable to check permissions.").await;
+                        return;
+                    }
+                }
+            } else {
+                let _ = msg.reply(&ctx.http, "❌ This command can only be used in servers.").await;
+                return;
+            }
+
+            let _ = msg.reply(&ctx.http, "🔄 Syncing commands... Please wait.").await;
+            
+            let register_commands = vec![
+                commands::register_ping(),
+                commands::register_serverinfo(),
+                commands::register_membercount(),
+            ];
+            
+            // Add a small delay to be respectful to Discord's API
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            
+            match Command::set_global_commands(&ctx.http, register_commands).await {
+                Ok(commands) => {
+                    info!("Successfully synced {} slash commands", commands.len());
+                    let _ = msg.reply(&ctx.http, &format!("✅ Successfully synced {} slash commands!", commands.len())).await;
+                },
+                Err(e) => {
+                    error!("Failed to sync commands: {}", e);
+                    let _ = msg.reply(&ctx.http, &format!("❌ Failed to sync commands: {}", e)).await;
+                }
+            }
+            return;
+        }
+
+        debug!("Received message from {}: '{}' - Current conversation active: {}", 
+               msg.author.tag(), msg.content, self.has_active_conversation(msg.channel_id, msg.author.id));
         
         // Cleanup expired conversations periodically
         self.cleanup_expired_conversations();
@@ -224,6 +264,7 @@ impl EventHandler for Handler {
             
             // Start new conversation if not already active
             if !self.has_active_conversation(msg.channel_id, msg.author.id) {
+                debug!("Starting new conversation for user {} in channel {}", msg.author.id, msg.channel_id);
                 self.start_conversation(msg.channel_id, msg.author.id);
             }
 
