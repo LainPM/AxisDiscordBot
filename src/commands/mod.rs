@@ -3,29 +3,26 @@ use serenity::model::prelude::*;
 use serenity::prelude::*;
 use tracing::info;
 
-pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
-    // 1) Gateway latency (heartbeat)
-    let shard_manager = ctx.shard_manager.clone();
-    let gateway_latency = {
-        let managers = shard_manager.lock().await;
-        managers.shards[0].latency().unwrap_or_default().as_millis()
-    };
+// src/commands/mod.rs
+pub mod ping;
+// (you can similarly split serverinfo.rs and membercount.rs  
+//  or just leave those two handlers here if you prefer)
 
-    // 2) REST latency (defer + edit)
-    let rest_start = std::time::Instant::now();
-    command.defer(&ctx.http).await?;
-    let rest_latency = rest_start.elapsed().as_millis();
+use serenity::builder::CreateCommand;
+pub use ping::{ping as ping_command, register_ping};
 
-    // 3) Edit the deferred response
-    command.edit_response(&ctx.http, |resp| {
-        resp.content(format!(
-            "Gateway: {}ms\nREST:    {}ms",
-            gateway_latency, rest_latency
-        ))
-    }).await?;
+// If you kept serverinfo/membercount in mod.rs you’d `pub use` them here too.
+// e.g. `pub use serverinfo::serverinfo as serverinfo_command;`
 
-    Ok(())
+/// A helper to register all your slash commands in one go:
+pub fn all_commands() -> Vec<CreateCommand> {
+    vec![
+        register_ping(),
+        // register_serverinfo(),
+        // register_membercount(),
+    ]
 }
+
 
 pub async fn serverinfo(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
     let http = ctx.http.clone();
