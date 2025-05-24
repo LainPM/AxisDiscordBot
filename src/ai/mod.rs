@@ -13,6 +13,7 @@ pub struct GeminiClient {
 
 impl GeminiClient {
     pub fn new(api_key: String) -> Self {
+        info!("Initializing Gemini AI client");
         Self {
             client: Client::new(),
             api_key,
@@ -36,7 +37,8 @@ impl GeminiClient {
             - Focus on providing accurate, actionable information\n\
             - Keep responses under 2000 characters due to Discord limits\n\
             - When providing code examples, use proper Luau syntax\n\
-            - If you don't know something, state it directly rather than guessing\n\n\
+            - If you don't know something, state it directly rather than guessing\n\
+            - Address the user by their username when appropriate\n\n\
             Current user information: {}\n\n\
             User message: {}",
             user_info, prompt
@@ -74,7 +76,7 @@ impl GeminiClient {
             ]
         });
 
-        debug!("Sending request to Gemini API");
+        debug!("Sending request to Gemini API for response generation");
         
         let response = self.client
             .post(&url)
@@ -94,16 +96,19 @@ impl GeminiClient {
         let json: Value = response.json().await
             .context("Failed to parse Gemini API response")?;
 
-        debug!("Received response from Gemini API");
+        debug!("Successfully received response from Gemini API");
 
-        // Extract the response text
-        let text = json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
+        // Extract the response text with better error handling
+        let text = json["candidates"]
+            .get(0)
+            .and_then(|candidate| candidate["content"]["parts"].get(0))
+            .and_then(|part| part["text"].as_str())
             .context("Invalid response structure from Gemini API")?
             .to_string();
 
         // Ensure Discord character limit compliance
         if text.len() > 2000 {
+            info!("Response truncated from {} to 2000 characters", text.len());
             Ok(format!("{}...", &text[..1997]))
         } else {
             Ok(text)
@@ -119,10 +124,10 @@ impl GeminiClient {
         let system_prompt = format!(
             "Analyze the following message to determine if the user wants to end the conversation. \
             Consider context clues like:\n\
-            - Explicit goodbye statements (bye, goodbye, see you later, etc.)\n\
-            - Statements indicating they're done (that's all, I'm finished, no more questions, etc.)\n\
-            - Thank you messages that seem final\n\
-            - Clear dismissal statements\n\n\
+            - Explicit goodbye statements (bye, goodbye, see you later, thanks that's all, etc.)\n\
+            - Statements indicating they're done (that's all, I'm finished, no more questions, done, etc.)\n\
+            - Thank you messages that seem final (thanks, thank you with no follow-up question)\n\
+            - Clear dismissal statements (stop, quit, exit, leave, etc.)\n\n\
             User info: {}\n\
             Message to analyze: {}\n\n\
             Respond with only 'YES' if they want to end the conversation, or 'NO' if they want to continue.",
@@ -143,6 +148,8 @@ impl GeminiClient {
             }
         });
 
+        debug!("Analyzing conversation termination intent");
+
         let response = self.client
             .post(&url)
             .json(&payload)
@@ -152,19 +159,25 @@ impl GeminiClient {
             .context("Failed to send conversation analysis request")?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to analyze conversation intent"));
+            debug!("Conversation analysis API call failed, defaulting to continue");
+            return Ok(false);
         }
 
         let json: Value = response.json().await
             .context("Failed to parse conversation analysis response")?;
 
-        let response_text = json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
+        let response_text = json["candidates"]
+            .get(0)
+            .and_then(|candidate| candidate["content"]["parts"].get(0))
+            .and_then(|part| part["text"].as_str())
             .unwrap_or("NO")
             .trim()
             .to_uppercase();
 
-        Ok(response_text == "YES")
+        let should_stop = response_text == "YES";
+        debug!("Conversation termination analysis result: {}", should_stop);
+        
+        Ok(should_stop)
     }
 
     pub async fn should_respond_to_message(
@@ -178,7 +191,7 @@ impl GeminiClient {
         // If there's an active conversation with this user in this channel, always respond
         if let Some(active_user_id) = active_conversations.get(&channel_id) {
             if *active_user_id == author_id {
-                debug!("Responding due to active conversation");
+                debug!("Responding due to active conversation with user {}", author_id);
                 return Ok(true);
             }
         }
@@ -192,14 +205,15 @@ impl GeminiClient {
         let system_prompt = format!(
             "Analyze this message to determine if it's directed at a bot named '{}' or requesting help with Roblox development.\n\
             Look for:\n\
-            - Direct mentions of the bot name\n\
-            - Greetings directed at the bot (hey {}, hi {}, etc.)\n\
+            - Direct mentions of the bot name ({})\n\
+            - Greetings directed at the bot (hey {}, hi {}, hello {}, etc.)\n\
             - Requests for help or assistance\n\
-            - Questions about Roblox development\n\
-            - General programming or scripting questions\n\n\
+            - Questions about Roblox development, scripting, or game development\n\
+            - General programming or scripting questions\n\
+            - Questions that seem to be asking for technical assistance\n\n\
             Message: {}\n\n\
             Respond with only 'YES' if the bot should respond, or 'NO' if it should not.",
-            bot_name, bot_name, bot_name, content
+            bot_name, bot_name, bot_name, bot_name, bot_name, content
         );
 
         let payload = json!({
@@ -216,33 +230,42 @@ impl GeminiClient {
             }
         });
 
+        debug!("Analyzing message intent for response decision");
+
         let response = self.client
             .post(&url)
             .json(&payload)
             .timeout(std::time::Duration::from_secs(5))
             .send()
-            .await
-            .context("Failed to analyze message intent")?;
+            .await;
 
-        if !response.status().is_success() {
-            // Fallback to simple keyword detection if AI fails
-            debug!("AI analysis failed, falling back to keyword detection");
-            return Ok(self.fallback_should_respond(content, bot_name));
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<Value>().await {
+                    Ok(json) => {
+                        let response_text = json["candidates"]
+                            .get(0)
+                            .and_then(|candidate| candidate["content"]["parts"].get(0))
+                            .and_then(|part| part["text"].as_str())
+                            .unwrap_or("NO")
+                            .trim()
+                            .to_uppercase();
+
+                        let should_respond = response_text == "YES";
+                        debug!("AI determined should_respond: {}", should_respond);
+                        Ok(should_respond)
+                    },
+                    Err(_) => {
+                        debug!("Failed to parse AI response, using fallback");
+                        Ok(self.fallback_should_respond(content, bot_name))
+                    }
+                }
+            },
+            _ => {
+                debug!("AI analysis failed, using fallback keyword detection");
+                Ok(self.fallback_should_respond(content, bot_name))
+            }
         }
-
-        let json: Value = response.json().await
-            .context("Failed to parse message intent response")?;
-
-        let response_text = json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .unwrap_or("NO")
-            .trim()
-            .to_uppercase();
-
-        let should_respond = response_text == "YES";
-        debug!("AI determined should_respond: {}", should_respond);
-        
-        Ok(should_respond)
     }
 
     fn fallback_should_respond(&self, content: &str, bot_name: &str) -> bool {
@@ -260,8 +283,12 @@ impl GeminiClient {
             "luau".to_string(),
             "script".to_string(),
             "scripting".to_string(),
+            "help me".to_string(),
+            "can you".to_string(),
         ];
         
-        triggers.iter().any(|trigger| content_lower.contains(trigger))
+        let should_respond = triggers.iter().any(|trigger| content_lower.contains(trigger));
+        debug!("Fallback keyword detection result: {}", should_respond);
+        should_respond
     }
 }
