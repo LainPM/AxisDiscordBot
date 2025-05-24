@@ -75,8 +75,7 @@ impl GeminiClient {
             - When providing code examples, use proper Luau syntax\n\
             - If you don't know something, state it directly rather than guessing\n\
             - Address the user by their username when appropriate\n\
-            - You can reference user information like their avatar, nickname, and user ID when relevant\n\
-            - Note: User bio information is not currently available through the bot API\n\n\
+            - You can reference user information like their avatar, nickname, and user ID when relevant\n\n\
             Current user information:\n{}\n\n\
             User message: {}",
             user_info, prompt
@@ -206,7 +205,7 @@ impl GeminiClient {
         let content_lower = content_lower_string.trim();
         let bot_name_lower = bot_name.to_lowercase();
         
-        // Direct bot mentions and greetings
+        // Direct bot mentions and greetings (always trigger new conversations)
         let direct_mentions = [
             &bot_name_lower,
             &format!("hey {}", bot_name_lower),
@@ -230,15 +229,19 @@ impl GeminiClient {
             "do you know", "question about"
         ];
 
-        let has_direct_mention = direct_mentions.iter().any(|&mention| content_lower.contains(mention));
+        let has_direct_mention = direct_mentions.iter().any(|&mention| 
+            content_lower.contains(mention) || content_lower == mention
+        );
         let has_dev_keyword = dev_keywords.iter().any(|&keyword| content_lower.contains(keyword));
         let has_help_request = help_patterns.iter().any(|&pattern| content_lower.contains(pattern));
 
-        let should_respond = has_direct_mention || (has_help_request && has_dev_keyword) || 
+        // Always respond to direct mentions, even without dev keywords
+        let should_respond = has_direct_mention || 
+            (has_help_request && has_dev_keyword) || 
             (content_lower.len() > 10 && has_dev_keyword && content_lower.contains("?"));
 
-        debug!("Response decision - direct: {}, dev: {}, help: {}, result: {}", 
-               has_direct_mention, has_dev_keyword, has_help_request, should_respond);
+        debug!("Response decision for '{}' - direct: {}, dev: {}, help: {}, result: {}", 
+               content_lower, has_direct_mention, has_dev_keyword, has_help_request, should_respond);
         
         should_respond
     }
