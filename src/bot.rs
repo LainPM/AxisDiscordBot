@@ -7,7 +7,8 @@ use serenity::model::prelude::*;
 use serenity::prelude::*;
 use std::sync::Arc;
 use dashmap::DashMap;
-use tracing::{error, info, debug};
+use tracing::{error, info, debug, warn};
+use std::time::{Duration, Instant};
 
 use crate::ai::GeminiClient;
 use crate::commands;
@@ -19,10 +20,33 @@ impl TypeMapKey for ShardManagerContainer {
     type Value = Arc<serenity::gateway::ShardManager>;
 }
 
+#[derive(Debug, Clone)]
+pub struct ConversationState {
+    pub user_id: UserId,
+    pub last_activity: Instant,
+}
+
+impl ConversationState {
+    pub fn new(user_id: UserId) -> Self {
+        Self {
+            user_id,
+            last_activity: Instant::now(),
+        }
+    }
+
+    pub fn update_activity(&mut self) {
+        self.last_activity = Instant::now();
+    }
+
+    pub fn is_expired(&self, timeout_minutes: u64) -> bool {
+        self.last_activity.elapsed() > Duration::from_secs(timeout_minutes * 60)
+    }
+}
+
 pub struct Handler {
     pub config: Config,
     pub gemini_client: GeminiClient,
-    pub active_conversations: Arc<DashMap<ChannelId, UserId>>,
+    pub active_conversations: Arc<DashMap<ChannelId, ConversationState>>,
 }
 
 impl Handler {
@@ -34,6 +58,58 @@ impl Handler {
             gemini_client,
             active_conversations: Arc::new(DashMap::new()),
         }
+    }
+
+    fn cleanup_expired_conversations(&self) {
+        let mut to_remove = Vec::new();
+        
+        for entry in self.active_conversations.iter() {
+            if entry.value().is_expired(30) { // 30 minute timeout
+                to_remove.push(*entry.key());
+            }
+        }
+
+        for channel_id in to_remove {
+            self.active_conversations.remove(&channel_id);
+            debug!("Cleaned up expired conversation in channel {}", channel_id);
+        }
+    }
+
+    fn start_conversation(&self, channel_id: ChannelId, user_id: UserId) {
+        let state = ConversationState::new(user_id);
+        self.active_conversations.insert(channel_id, state);
+        info!("Started new conversation with user {} in channel {}", user_id, channel_id);
+    }
+
+    fn update_conversation(&self, channel_id: ChannelId, user_id: UserId) -> bool {
+        if let Some(mut state) = self.active_conversations.get_mut(&channel_id) {
+            if state.user_id == user_id {
+                state.update_activity();
+                return true;
+            } else {
+                // Different user trying to use the channel, end the old conversation
+                debug!("Different user {} trying to use channel {}, ending old conversation", user_id, channel_id);
+                self.active_conversations.remove(&channel_id);
+                return false;
+            }
+        }
+        false
+    }
+
+    fn end_conversation(&self, channel_id: ChannelId, user_id: UserId) -> bool {
+        if let Some(state) = self.active_conversations.get(&channel_id) {
+            if state.user_id == user_id {
+                self.active_conversations.remove(&channel_id);
+                info!("Ended conversation with user {} in channel {}", user_id, channel_id);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn has_active_conversation(&self, channel_id: ChannelId, user_id: UserId) -> bool {
+        self.active_conversations.get(&channel_id)
+            .map_or(false, |state| state.user_id == user_id)
     }
 }
 
@@ -54,6 +130,27 @@ impl EventHandler for Handler {
             Ok(commands) => info!("Successfully registered {} application commands", commands.len()),
             Err(e) => error!("Failed to register application commands: {}", e),
         }
+
+        // Start background task to cleanup expired conversations
+        let conversations = self.active_conversations.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300)); // Check every 5 minutes
+            loop {
+                interval.tick().await;
+                let mut to_remove = Vec::new();
+                
+                for entry in conversations.iter() {
+                    if entry.value().is_expired(30) { // 30 minute timeout
+                        to_remove.push(*entry.key());
+                    }
+                }
+
+                for channel_id in to_remove {
+                    conversations.remove(&channel_id);
+                    debug!("Background cleanup: removed expired conversation in channel {}", channel_id);
+                }
+            }
+        });
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -87,53 +184,58 @@ impl EventHandler for Handler {
         }
 
         debug!("Received message from {}: {}", msg.author.tag(), msg.content);
+        
+        // Cleanup expired conversations periodically
+        self.cleanup_expired_conversations();
+
         let http = ctx.http.clone();
 
-        // Check if AI should stop conversation
-        if let Some(active_user) = self.active_conversations.get(&msg.channel_id) {
-            if *active_user.value() == msg.author.id {
-                match self.gemini_client.should_stop_conversation(&msg.content, &msg.author).await {
-                    Ok(true) => {
-                        info!("Stopping conversation with {} in channel {}", msg.author.tag(), msg.channel_id);
-                        self.active_conversations.remove(&msg.channel_id);
-                        if let Err(e) = msg.reply(&http, "Conversation ended. Feel free to reach out again if you need assistance with Roblox development.").await {
-                            error!("Failed to send stop confirmation: {}", e);
-                        }
-                        return;
-                    },
-                    Ok(false) => {},
-                    Err(e) => {
-                        error!("Failed to check conversation stop: {}", e);
+        // Check if user wants to stop an active conversation
+        if self.has_active_conversation(msg.channel_id, msg.author.id) {
+            if self.gemini_client.should_stop_conversation(&msg.content) {
+                if self.end_conversation(msg.channel_id, msg.author.id) {
+                    if let Err(e) = msg.reply(&http, "Conversation ended. Feel free to reach out again if you need assistance with Roblox development.").await {
+                        error!("Failed to send stop confirmation: {}", e);
                     }
+                    return;
                 }
+            } else {
+                // Update conversation activity
+                self.update_conversation(msg.channel_id, msg.author.id);
             }
         }
         
-        let should_respond = self.gemini_client.should_respond_to_message(
-            &msg.content,
-            &self.config.bot_name,
-            msg.author.id,
-            msg.channel_id,
-            &self.active_conversations,
-        ).await.unwrap_or(false);
+        // Determine if bot should respond to this message
+        let should_respond = if self.has_active_conversation(msg.channel_id, msg.author.id) {
+            true // Always respond to active conversations
+        } else {
+            // Check if this is a new conversation request
+            self.gemini_client.should_respond_to_message(
+                &msg.content,
+                &self.config.bot_name,
+                msg.author.id,
+                msg.channel_id,
+                &Arc::new(DashMap::new()), // Pass empty map since we're managing state differently now
+            )
+        };
 
         if should_respond {
-            info!("Responding to message from {} in channel {}", msg.author.tag(), msg.channel_id);
-            let is_existing_active_convo_for_user = self.active_conversations.get(&msg.channel_id)
-                .map_or(false, |user| *user.value() == msg.author.id);
-
-            if !is_existing_active_convo_for_user {
-                self.active_conversations.insert(msg.channel_id, msg.author.id);
-                info!("Started new conversation with {} in channel {}", msg.author.tag(), msg.channel_id);
+            debug!("Bot will respond to message from {} in channel {}", msg.author.tag(), msg.channel_id);
+            
+            // Start new conversation if not already active
+            if !self.has_active_conversation(msg.channel_id, msg.author.id) {
+                self.start_conversation(msg.channel_id, msg.author.id);
             }
 
             let _typing_guard = msg.channel_id.start_typing(&http);
             
-            match self.gemini_client.generate_response(&msg.content, &msg.author).await {
+            match self.gemini_client.generate_response(&msg.content, &msg.author, msg.guild_id, &ctx).await {
                 Ok(response) => {
                     debug!("Generated AI response: {}", response);
                     if let Err(e) = msg.reply(&http, response).await {
                         error!("Failed to send AI response: {}", e);
+                        // End conversation on send failure to prevent getting stuck
+                        self.end_conversation(msg.channel_id, msg.author.id);
                     }
                 }
                 Err(e) => {
@@ -145,11 +247,17 @@ impl EventHandler for Handler {
                     } else {
                         "I'm having trouble processing your request right now."
                     };
-                    if let Err(e) = msg.reply(&http, fallback_message).await {
-                        error!("Failed to send fallback AI response: {}", e);
+                    
+                    if let Err(send_err) = msg.reply(&http, fallback_message).await {
+                        error!("Failed to send fallback AI response: {}", send_err);
                     }
+                    
+                    // End conversation on AI failure to prevent getting stuck
+                    self.end_conversation(msg.channel_id, msg.author.id);
                 }
             }
+        } else {
+            debug!("Bot will not respond to message from {} in channel {}", msg.author.tag(), msg.channel_id);
         }
     }
 }
