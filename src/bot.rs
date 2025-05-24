@@ -146,28 +146,56 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::Command(command) = interaction {
-            info!("Received command: {}", command.data.name);
-            let result = match command.data.name.as_str() {
-                "ping" => commands::ping(&ctx, &command).await,
-                "serverinfo" => commands::serverinfo(&ctx, &command).await,
-                "membercount" => commands::membercount(&ctx, &command).await,
-                _ => {
-                    error!("Unknown command: {}", command.data.name);
-                    Ok(())
-                }
-            };
+        // Handle commands in a separate task to prevent blocking
+        let ctx_clone = ctx.clone();
+        let interaction_clone = interaction.clone();
+        
+        tokio::spawn(async move {
+            if let Interaction::Command(command) = interaction_clone {
+                info!("Processing command: {} from user: {}", command.data.name, command.user.tag());
+                
+                let result = match command.data.name.as_str() {
+                    "ping" => {
+                        debug!("Executing ping command");
+                        commands::ping(&ctx_clone, &command).await
+                    },
+                    "serverinfo" => {
+                        debug!("Executing serverinfo command");
+                        commands::serverinfo(&ctx_clone, &command).await
+                    },
+                    "membercount" => {
+                        debug!("Executing membercount command");
+                        commands::membercount(&ctx_clone, &command).await
+                    },
+                    unknown => {
+                        error!("Unknown command received: {}", unknown);
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Unknown command.")
+                                .ephemeral(true)
+                        );
+                        command.create_response(&ctx_clone.http, response).await
+                    }
+                };
 
-            if let Err(e) = result {
-                error!("Error handling command {}: {}", command.data.name, e);
-                let response = CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content("An error occurred while processing the command.")
-                        .ephemeral(true)
-                );
-                let _ = command.create_response(&ctx.http, response).await;
+                if let Err(e) = result {
+                    error!("Error executing command {}: {}", command.data.name, e);
+                    
+                    // Try to send error response if we haven't responded yet
+                    let error_response = CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("An error occurred while processing the command.")
+                            .ephemeral(true)
+                    );
+                    
+                    if let Err(resp_err) = command.create_response(&ctx_clone.http, error_response).await {
+                        error!("Failed to send error response: {}", resp_err);
+                    }
+                }
+                
+                info!("Completed processing command: {}", command.data.name);
             }
-        }
+        });
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
@@ -175,130 +203,164 @@ impl EventHandler for Handler {
             return;
         }
 
-        // Handle sync commands first (before other processing)
-        if msg.content.starts_with("!sync_all") {
+        // Handle sync commands first and return immediately
+        if msg.content.trim() == "!sync_all" {
             info!("Sync command received from {}", msg.author.tag());
             
-            // Check if user has admin permissions
-            if let Some(guild_id) = msg.guild_id {
-                match guild_id.member(&ctx.http, msg.author.id).await {
-                    Ok(member) => {
-                        if !member.permissions(&ctx.cache).map_or(false, |p| p.administrator()) {
-                            let _ = msg.reply(&ctx.http, "❌ You need Administrator permissions to sync commands.").await;
+            // Check permissions in a separate task to not block other messages
+            let ctx_clone = ctx.clone();
+            let msg_clone = msg.clone();
+            
+            tokio::spawn(async move {
+                // Check if user has admin permissions
+                if let Some(guild_id) = msg_clone.guild_id {
+                    match guild_id.member(&ctx_clone.http, msg_clone.author.id).await {
+                        Ok(member) => {
+                            if !member.permissions(&ctx_clone.cache).map_or(false, |p| p.administrator()) {
+                                let _ = msg_clone.reply(&ctx_clone.http, "❌ You need Administrator permissions to sync commands.").await;
+                                return;
+                            }
+                        },
+                        Err(_) => {
+                            let _ = msg_clone.reply(&ctx_clone.http, "❌ Unable to check permissions.").await;
                             return;
                         }
-                    },
-                    Err(_) => {
-                        let _ = msg.reply(&ctx.http, "❌ Unable to check permissions.").await;
-                        return;
                     }
-                }
-            } else {
-                let _ = msg.reply(&ctx.http, "❌ This command can only be used in servers.").await;
-                return;
-            }
-
-            let _ = msg.reply(&ctx.http, "🔄 Syncing commands... Please wait.").await;
-            
-            let register_commands = vec![
-                commands::register_ping(),
-                commands::register_serverinfo(),
-                commands::register_membercount(),
-            ];
-            
-            // Add a small delay to be respectful to Discord's API
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            
-            match Command::set_global_commands(&ctx.http, register_commands).await {
-                Ok(commands) => {
-                    info!("Successfully synced {} slash commands", commands.len());
-                    let _ = msg.reply(&ctx.http, &format!("✅ Successfully synced {} slash commands!", commands.len())).await;
-                },
-                Err(e) => {
-                    error!("Failed to sync commands: {}", e);
-                    let _ = msg.reply(&ctx.http, &format!("❌ Failed to sync commands: {}", e)).await;
-                }
-            }
-            return;
-        }
-
-        debug!("Received message from {}: '{}' - Current conversation active: {}", 
-               msg.author.tag(), msg.content, self.has_active_conversation(msg.channel_id, msg.author.id));
-        
-        // Cleanup expired conversations periodically
-        self.cleanup_expired_conversations();
-
-        let http = ctx.http.clone();
-
-        // Check if user wants to stop an active conversation
-        if self.has_active_conversation(msg.channel_id, msg.author.id) {
-            if self.gemini_client.should_stop_conversation(&msg.content) {
-                if self.end_conversation(msg.channel_id, msg.author.id) {
-                    if let Err(e) = msg.reply(&http, "Conversation ended. Feel free to reach out again if you need assistance with Roblox development.").await {
-                        error!("Failed to send stop confirmation: {}", e);
-                    }
+                } else {
+                    let _ = msg_clone.reply(&ctx_clone.http, "❌ This command can only be used in servers.").await;
                     return;
                 }
-            } else {
-                // Update conversation activity
-                self.update_conversation(msg.channel_id, msg.author.id);
-            }
+
+                let _ = msg_clone.reply(&ctx_clone.http, "🔄 Syncing commands... Please wait.").await;
+                
+                let register_commands = vec![
+                    commands::register_ping(),
+                    commands::register_serverinfo(),
+                    commands::register_membercount(),
+                ];
+                
+                // Add a small delay to be respectful to Discord's API
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                
+                match Command::set_global_commands(&ctx_clone.http, register_commands).await {
+                    Ok(commands) => {
+                        info!("Successfully synced {} slash commands", commands.len());
+                        let _ = msg_clone.reply(&ctx_clone.http, &format!("✅ Successfully synced {} slash commands!", commands.len())).await;
+                    },
+                    Err(e) => {
+                        error!("Failed to sync commands: {}", e);
+                        let _ = msg_clone.reply(&ctx_clone.http, &format!("❌ Failed to sync commands: {}", e)).await;
+                    }
+                }
+            });
+            
+            return; // Important: return immediately to not interfere with other processing
         }
+
+        // Handle AI conversations in a separate task to prevent blocking
+        let ctx_clone = ctx.clone();
+        let msg_clone = msg.clone();
+        let gemini_client = self.gemini_client.clone();
+        let config = self.config.clone();
+        let conversations = self.active_conversations.clone();
         
-        // Determine if bot should respond to this message
-        let should_respond = if self.has_active_conversation(msg.channel_id, msg.author.id) {
-            true // Always respond to active conversations
-        } else {
-            // Check if this is a new conversation request
-            self.gemini_client.should_respond_to_message(
-                &msg.content,
-                &self.config.bot_name,
-                msg.author.id,
-                msg.channel_id,
-                &Arc::new(DashMap::new()), // Pass empty map since we're managing state differently now
-            )
-        };
-
-        if should_respond {
-            debug!("Bot will respond to message from {} in channel {}", msg.author.tag(), msg.channel_id);
+        tokio::spawn(async move {
+            debug!("Processing AI message from {}: '{}' - Current conversation active: {}", 
+                   msg_clone.author.tag(), msg_clone.content, 
+                   conversations.get(&msg_clone.channel_id).map_or(false, |state| state.user_id == msg_clone.author.id));
             
-            // Start new conversation if not already active
-            if !self.has_active_conversation(msg.channel_id, msg.author.id) {
-                debug!("Starting new conversation for user {} in channel {}", msg.author.id, msg.channel_id);
-                self.start_conversation(msg.channel_id, msg.author.id);
-            }
-
-            let _typing_guard = msg.channel_id.start_typing(&http);
-            
-            match self.gemini_client.generate_response(&msg.content, &msg.author, msg.guild_id, &ctx).await {
-                Ok(response) => {
-                    debug!("Generated AI response: {}", response);
-                    if let Err(e) = msg.reply(&http, response).await {
-                        error!("Failed to send AI response: {}", e);
-                        // End conversation on send failure to prevent getting stuck
-                        self.end_conversation(msg.channel_id, msg.author.id);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to generate AI response: {}", e);
-                    let fallback_message = if e.to_string().contains("timeout") {
-                        "Request timed out. Please try again."
-                    } else if e.to_string().contains("API error") {
-                        "I'm experiencing technical difficulties. Please try again later."
-                    } else {
-                        "I'm having trouble processing your request right now."
-                    };
-                    
-                    if let Err(send_err) = msg.reply(&http, fallback_message).await {
-                        error!("Failed to send fallback AI response: {}", send_err);
-                    }
-                    
-                    // End conversation on AI failure to prevent getting stuck
-                    self.end_conversation(msg.channel_id, msg.author.id);
+            // Cleanup expired conversations periodically
+            let mut to_remove = Vec::new();
+            for entry in conversations.iter() {
+                if entry.value().is_expired(30) {
+                    to_remove.push(*entry.key());
                 }
             }
-        } else {
-            debug!("Bot will not respond to message from {} in channel {}", msg.author.tag(), msg.channel_id);
-        }
+            for channel_id in to_remove {
+                conversations.remove(&channel_id);
+            }
+
+            let has_active_convo = conversations.get(&msg_clone.channel_id)
+                .map_or(false, |state| state.user_id == msg_clone.author.id);
+
+            // Check if user wants to stop an active conversation
+            if has_active_convo {
+                if gemini_client.should_stop_conversation(&msg_clone.content) {
+                    if let Some(state) = conversations.get(&msg_clone.channel_id) {
+                        if state.user_id == msg_clone.author.id {
+                            conversations.remove(&msg_clone.channel_id);
+                            info!("Ended conversation with user {} in channel {}", msg_clone.author.id, msg_clone.channel_id);
+                            let _ = msg_clone.reply(&ctx_clone.http, "Conversation ended. Feel free to reach out again if you need assistance with Roblox development.").await;
+                            return;
+                        }
+                    }
+                } else {
+                    // Update conversation activity
+                    if let Some(mut state) = conversations.get_mut(&msg_clone.channel_id) {
+                        if state.user_id == msg_clone.author.id {
+                            state.update_activity();
+                        }
+                    }
+                }
+            }
+            
+            // Determine if bot should respond to this message
+            let should_respond = if has_active_convo {
+                true // Always respond to active conversations
+            } else {
+                // Check if this is a new conversation request
+                gemini_client.should_respond_to_message(
+                    &msg_clone.content,
+                    &config.bot_name,
+                    msg_clone.author.id,
+                    msg_clone.channel_id,
+                    &Arc::new(DashMap::new()),
+                )
+            };
+
+            if should_respond {
+                debug!("Bot will respond to message from {} in channel {}", msg_clone.author.tag(), msg_clone.channel_id);
+                
+                // Start new conversation if not already active
+                if !has_active_convo {
+                    debug!("Starting new conversation for user {} in channel {}", msg_clone.author.id, msg_clone.channel_id);
+                    let state = ConversationState::new(msg_clone.author.id);
+                    conversations.insert(msg_clone.channel_id, state);
+                    info!("Started new conversation with user {} in channel {}", msg_clone.author.id, msg_clone.channel_id);
+                }
+
+                let _typing_guard = msg_clone.channel_id.start_typing(&ctx_clone.http);
+                
+                match gemini_client.generate_response(&msg_clone.content, &msg_clone.author, msg_clone.guild_id, &ctx_clone).await {
+                    Ok(response) => {
+                        debug!("Generated AI response for user {}", msg_clone.author.tag());
+                        if let Err(e) = msg_clone.reply(&ctx_clone.http, response).await {
+                            error!("Failed to send AI response: {}", e);
+                            // End conversation on send failure to prevent getting stuck
+                            conversations.remove(&msg_clone.channel_id);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to generate AI response: {}", e);
+                        let fallback_message = if e.to_string().contains("timeout") {
+                            "Request timed out. Please try again."
+                        } else if e.to_string().contains("API error") {
+                            "I'm experiencing technical difficulties. Please try again later."
+                        } else {
+                            "I'm having trouble processing your request right now."
+                        };
+                        
+                        if let Err(send_err) = msg_clone.reply(&ctx_clone.http, fallback_message).await {
+                            error!("Failed to send fallback AI response: {}", send_err);
+                        }
+                        
+                        // End conversation on AI failure to prevent getting stuck
+                        conversations.remove(&msg_clone.channel_id);
+                    }
+                }
+            } else {
+                debug!("Bot will not respond to message from {} in channel {}", msg_clone.author.tag(), msg_clone.channel_id);
+            }
+        });
     }
 }
