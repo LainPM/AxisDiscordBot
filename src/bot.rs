@@ -8,7 +8,6 @@ use serenity::prelude::*;
 use std::sync::Arc;
 use dashmap::DashMap;
 use tracing::{error, info, debug, warn};
-use chrono::Utc;
 
 use crate::ai::GeminiClient;
 use crate::commands;
