@@ -1,7 +1,6 @@
 use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use chrono::{DateTime, Utc};
 use tracing::{info, error, debug};
 use std::time::Instant;
 
@@ -43,7 +42,7 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
         .field("API Latency", format!("{}ms", api_latency), true)
         .field("WebSocket Latency", format!("{}ms", ws_latency), true)
         .field("Status", if api_latency < 100 { "Excellent" } else if api_latency < 300 { "Good" } else { "High" }, true)
-        .timestamp(Utc::now())
+        .timestamp(Timestamp::now())
         .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot"));
     
     let edit_response = EditInteractionResponse::new()
@@ -78,9 +77,7 @@ pub async fn serverinfo(ctx: &Context, command: &CommandInteraction) -> Result<(
     let guild_data = match ctx.cache.guild(guild_id) {
         Some(guild_ref) => {
             let guild = guild_ref.clone();
-            let created_at_unix = guild.id.created_at().unix_timestamp();
-            let created_at: DateTime<Utc> = DateTime::from_timestamp(created_at_unix, 0)
-                .expect("Invalid timestamp from Discord API");
+            let created_at = guild.id.created_at();
                 
             let owner_tag = match guild.owner_id.to_user(&http).await {
                 Ok(user) => user.tag(),
@@ -138,7 +135,7 @@ pub async fn serverinfo(ctx: &Context, command: &CommandInteraction) -> Result<(
                 .field("Verification Level", format!("{:?}", verification_level), true)
                 .field("Server ID", format!("`{}`", server_id_str), false)
                 .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot"))
-                .timestamp(Utc::now());
+                .timestamp(Timestamp::now());
             
             let edit_response = EditInteractionResponse::new().embed(embed);
             command.edit_response(&http, edit_response).await?;
@@ -189,7 +186,7 @@ pub async fn membercount(ctx: &Context, command: &CommandInteraction) -> Result<
                 .field("Server", guild_name, false)
                 .field("Total Members", format!("{} members", member_count), false)
                 .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot"))
-                .timestamp(Utc::now());
+                .timestamp(Timestamp::now());
 
             let response = CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().embed(embed)
