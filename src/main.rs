@@ -26,8 +26,6 @@ async fn main() -> Result<()> {
         .init();
     
     info!("=== Starting Axis Bot ===");
-    info!("Rust version: {}", env!("RUSTC_VERSION"));
-    info!("Build timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
 
     // Load configuration
     let config = match Config::from_env() {
