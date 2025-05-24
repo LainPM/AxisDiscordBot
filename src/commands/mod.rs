@@ -31,10 +31,19 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
         
         // Get the latency for the current shard
         // ctx.shard_id is u64. The runners map uses u64 as keys directly.
-        runners_lock.get(&ctx.shard_id)
-            .and_then(|runner_info| runner_info.latency)
-            .map(|latency_duration| format!("{}ms", latency_duration.as_millis()))
-            .unwrap_or_else(|| "N/A".to_string())
+        let runner_info_opt = runners_lock.get(&ctx.shard_id);
+        info!("Shard ID: {}, Runner info found: {}", ctx.shard_id, runner_info_opt.is_some());
+
+        if let Some(runner) = runner_info_opt {
+            info!("Runner for shard {}: latency is {:?}", ctx.shard_id, runner.latency);
+            if let Some(latency_duration) = runner.latency {
+                format!("{}ms", latency_duration.as_millis())
+            } else {
+                "N/A".to_string()
+            }
+        } else {
+            "N/A".to_string()
+        }
     };
     
     info!("Ping result - API: {}ms, Gateway: {}", api_latency, ws_latency_str);
