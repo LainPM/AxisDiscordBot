@@ -7,7 +7,7 @@ use serenity::model::prelude::*;
 use serenity::prelude::*;
 use std::sync::Arc;
 use dashmap::DashMap;
-use tracing::{error, info, debug, warn};
+use tracing::{error, info, debug};
 use std::time::{Duration, Instant};
 
 use crate::ai::GeminiClient;
