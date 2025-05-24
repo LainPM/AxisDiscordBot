@@ -7,10 +7,10 @@ use serenity::model::prelude::*;
 use serenity::prelude::*;
 use std::sync::Arc;
 use dashmap::DashMap;
-use tracing::{error, info, debug};
+use tracing::{error, info, debug, warn};
 use chrono::Utc;
 
-use crate::ai::{GeminiClient, intents::{IntentMatcher, Intent}};
+use crate::ai::GeminiClient;
 use crate::commands;
 use crate::config::Config;
 
@@ -24,7 +24,6 @@ pub struct Handler {
     pub config: Config,
     pub gemini_client: GeminiClient,
     pub active_conversations: Arc<DashMap<ChannelId, UserId>>,
-    pub intent_matcher: IntentMatcher,
 }
 
 impl Handler {
@@ -35,107 +34,34 @@ impl Handler {
             config,
             gemini_client,
             active_conversations: Arc::new(DashMap::new()),
-            intent_matcher: IntentMatcher::new(),
         }
     }
 
-    async fn handle_command_intent(&self, ctx: &Context, msg: &Message, intent: Intent) -> Result<(), serenity::Error> {
-        let http = ctx.http.clone();
-        info!("Handling command intent: {:?}", intent);
+    async fn get_user_info(&self, ctx: &Context, user: &User, guild_id: Option<GuildId>) -> String {
+        let mut info = format!("Username: {}", user.name);
+        info.push_str(&format!(", Display Name: {}", user.global_name.as_ref().unwrap_or(&user.name)));
+        info.push_str(&format!(", User ID: {}", user.id));
         
-        match intent {
-            Intent::CheckPing => {
-                let start = std::time::Instant::now();
-                let typing_msg = msg.channel_id.say(&http, "Pinging...").await?;
-                let api_latency = start.elapsed().as_millis();
-                
-                let ws_latency = ctx.shard.lock().await
-                    .latency()
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0);
-                
-                let embed = CreateEmbed::new()
-                    .title("🏓 Pong!")
-                    .color(0x57F287)
-                    .field("Latency", format!("{}ms", api_latency), true)
-                    .field("WebSocket", format!("{}ms", ws_latency), true)
-                    .timestamp(Utc::now());
-                
-                typing_msg.delete(&http).await.ok();
-                msg.reply(&http, CreateMessage::new().embed(embed)).await?;
-            },
-            Intent::CheckServerInfo => {
-                if let Some(guild_id) = msg.guild_id {
-                    if let Some(guild) = ctx.cache.guild(guild_id) {
-                        let guild = guild.clone();
-                        let owner = guild.owner_id.to_user(&http).await.map_or("Unknown".to_string(), |u| u.tag());
-                        
-                        let embed = CreateEmbed::new()
-                            .title(format!("📊 {}", guild.name))
-                            .color(0x5865F2)
-                            .thumbnail(guild.icon_url().unwrap_or_default())
-                            .field("👑 Owner", owner, true)
-                            .field("👥 Members", format!("{} members", guild.member_count), true)
-                            .field("📅 Created", guild.id.created_at().format("%b %d, %Y"), true)
-                            .field("🎭 Roles", guild.roles.len().to_string(), true)
-                            .field("💬 Channels", guild.channels.len().to_string(), true)
-                            .field("🆔 Server ID", format!("`{}`", guild.id), false)
-                            .timestamp(Utc::now());
-                        
-                        msg.reply(&http, CreateMessage::new().embed(embed)).await?;
-                    }
+        if let Some(guild_id) = guild_id {
+            if let Ok(nickname) = user.nick_in(&ctx.http, guild_id).await {
+                if let Some(nick) = nickname {
+                    info.push_str(&format!(", Nickname: {}", nick));
                 }
-            },
-            Intent::CheckMemberCount => {
-                if let Some(guild_id) = msg.guild_id {
-                    if let Some(guild) = ctx.cache.guild(guild_id) {
-                        let guild = guild.clone();
-                        let embed = CreateEmbed::new()
-                            .title("👥 Member Statistics")
-                            .color(0x57F287)
-                            .field("🏠 Server", guild.name, false)
-                            .field("📊 Total Members", format!("**{}** members", guild.member_count), false)
-                            .timestamp(Utc::now());
-                        
-                        msg.reply(&http, CreateMessage::new().embed(embed)).await?;
-                    }
-                }
-            },
-            Intent::AskUsername => {
-                msg.reply(&http, format!("Your username is: **{}**", msg.author.tag())).await?;
-            },
-            Intent::AskNickname => {
-                if let Some(guild_id) = msg.guild_id {
-                    let nickname = msg.author.nick_in(&http, guild_id).await.unwrap_or_else(|| msg.author.name.clone());
-                    msg.reply(&http, format!("Your nickname in this server is: **{}**", nickname)).await?;
-                } else {
-                    msg.reply(&http, format!("Your username is: **{}** (no nickname in DMs)", msg.author.name)).await?;
-                }
-            },
-            Intent::AskUserId => {
-                msg.reply(&http, format!("Your user ID is: `{}`", msg.author.id)).await?;
-            },
-            Intent::AskBio => {
-                msg.reply(&http, "I cannot access user bios through the Discord API. You can check your bio in your Discord profile settings!").await?;
-            },
-            Intent::AskAvatar => {
-                let avatar_url = msg.author.avatar_url().unwrap_or_else(|| msg.author.default_avatar_url());
-                let embed = CreateEmbed::new()
-                    .title(format!("{}'s Avatar", msg.author.name))
-                    .image(avatar_url)
-                    .color(0x5865F2);
-                msg.reply(&http, CreateMessage::new().embed(embed)).await?;
-            },
-            _ => Ok(())
-        }?;
-        Ok(())
+            }
+        }
+        
+        if let Some(avatar_url) = user.avatar_url() {
+            info.push_str(&format!(", Avatar: {}", avatar_url));
+        }
+        
+        info
     }
 }
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        info!("{} is connected and ready!", ready.user.name);
+        info!("Bot {} is connected and ready!", ready.user.name);
         info!("Bot ID: {}", ready.user.id);
         info!("Connected to {} guilds", ready.guilds.len());
         
@@ -146,108 +72,154 @@ impl EventHandler for Handler {
         ];
 
         match Command::set_global_commands(&ctx.http, register_commands).await {
-            Ok(commands) => info!("Successfully registered {} application commands", commands.len()),
-            Err(e) => error!("Failed to register application commands: {}", e),
+            Ok(commands) => {
+                info!("Successfully registered {} application commands", commands.len());
+                for cmd in commands {
+                    info!("Registered command: {}", cmd.name);
+                }
+            },
+            Err(e) => {
+                error!("Failed to register application commands: {}", e);
+            }
         }
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(command) = interaction {
-            info!("Received command: {}", command.data.name);
+            info!("Received slash command: {} from user: {}", command.data.name, command.user.tag());
+            
             let result = match command.data.name.as_str() {
-                "ping" => commands::ping(&ctx, &command).await,
-                "serverinfo" => commands::serverinfo(&ctx, &command).await,
-                "membercount" => commands::membercount(&ctx, &command).await,
+                "ping" => {
+                    debug!("Executing ping command");
+                    commands::ping(&ctx, &command).await
+                },
+                "serverinfo" => {
+                    debug!("Executing serverinfo command");
+                    commands::serverinfo(&ctx, &command).await
+                },
+                "membercount" => {
+                    debug!("Executing membercount command");
+                    commands::membercount(&ctx, &command).await
+                },
                 _ => {
-                    error!("Unknown command: {}", command.data.name);
-                    Ok(())
+                    error!("Unknown command received: {}", command.data.name);
+                    let response = CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Unknown command.")
+                            .ephemeral(true)
+                    );
+                    command.create_response(&ctx.http, response).await
                 }
             };
 
             if let Err(e) = result {
                 error!("Error handling command {}: {}", command.data.name, e);
-                let response = CreateInteractionResponse::Message(
+                let error_response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
                         .content("An error occurred while processing the command.")
                         .ephemeral(true)
                 );
-                let _ = command.create_response(&ctx.http, response).await;
+                if let Err(response_error) = command.create_response(&ctx.http, error_response).await {
+                    error!("Failed to send error response: {}", response_error);
+                }
             }
         }
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
         if msg.author.bot {
+            debug!("Ignoring bot message from {}", msg.author.tag());
             return;
         }
 
-        debug!("Received message from {}: {}", msg.author.tag(), msg.content);
+        info!("Received message from {}: '{}'", msg.author.tag(), msg.content);
         let http = ctx.http.clone();
 
-        if self.intent_matcher.should_stop_conversation(&msg.content, msg.author.id, msg.channel_id, &self.active_conversations) {
-            info!("Stopping conversation with {} in channel {}", msg.author.tag(), msg.channel_id);
-            self.active_conversations.remove(&msg.channel_id);
-            if let Err(e) = msg.reply(&http, "Alright! Feel free to reach out anytime you need help with Roblox development! 👋").await {
-                error!("Failed to send stop confirmation: {}", e);
-            }
-            return;
-        }
-
-        if let Some(intent) = self.intent_matcher.detect_intent(&msg.content) {
-            match intent {
-                Intent::CheckPing | Intent::CheckServerInfo | Intent::CheckMemberCount | 
-                Intent::AskUsername | Intent::AskNickname | Intent::AskUserId | 
-                Intent::AskBio | Intent::AskAvatar => {
-                    if let Err(e) = self.handle_command_intent(&ctx, &msg, intent).await {
-                        error!("Failed to handle command intent: {}", e);
+        // Check if AI should determine the response (stop conversation, etc.)
+        let user_info = self.get_user_info(&ctx, &msg.author, msg.guild_id).await;
+        
+        // First, check if we should stop the conversation using AI
+        if let Some(active_user) = self.active_conversations.get(&msg.channel_id) {
+            if *active_user.value() == msg.author.id {
+                match self.gemini_client.should_stop_conversation(&msg.content, &user_info).await {
+                    Ok(true) => {
+                        info!("AI determined to stop conversation with {} in channel {}", msg.author.tag(), msg.channel_id);
+                        self.active_conversations.remove(&msg.channel_id);
+                        if let Err(e) = msg.reply(&http, "Conversation ended. Feel free to reach out again if you need assistance with Roblox development.").await {
+                            error!("Failed to send stop confirmation: {}", e);
+                        }
+                        return;
+                    },
+                    Ok(false) => {
+                        debug!("AI determined to continue conversation");
+                    },
+                    Err(e) => {
+                        warn!("Failed to check if conversation should stop: {}", e);
                     }
-                    return;
-                },
-                _ => {}
+                }
             }
         }
         
+        // Check if we should respond to this message
         let should_respond = self.gemini_client.should_respond_to_message(
             &msg.content,
             &self.config.bot_name,
             msg.author.id,
             msg.channel_id,
             &self.active_conversations,
-        );
+        ).await.unwrap_or(false);
 
         if should_respond {
-            info!("Responding to message from {} in channel {}", msg.author.tag(), msg.channel_id);
-            let is_existing_active_convo_for_user = self.active_conversations.get(&msg.channel_id)
+            info!("Generating response for message from {} in channel {}", msg.author.tag(), msg.channel_id);
+            
+            // Track active conversation
+            let is_existing_conversation = self.active_conversations.get(&msg.channel_id)
                 .map_or(false, |user| *user.value() == msg.author.id);
 
-            if !is_existing_active_convo_for_user {
+            if !is_existing_conversation {
                 self.active_conversations.insert(msg.channel_id, msg.author.id);
                 info!("Started new conversation with {} in channel {}", msg.author.tag(), msg.channel_id);
             }
 
+            // Show typing indicator
             let _typing_guard = msg.channel_id.start_typing(&http);
             
-            match self.gemini_client.generate_response(&msg.content, &msg.author).await {
+            match self.gemini_client.generate_response(&msg.content, &user_info).await {
                 Ok(response) => {
-                    debug!("Generated AI response: {}", response);
+                    info!("Generated AI response of length: {}", response.len());
+                    debug!("AI Response: {}", response);
+                    
                     if let Err(e) = msg.reply(&http, response).await {
                         error!("Failed to send AI response: {}", e);
+                    } else {
+                        info!("Successfully sent AI response to {}", msg.author.tag());
                     }
                 }
                 Err(e) => {
-                    error!("Failed to generate AI response: {}", e);
+                    error!("Failed to generate AI response for {}: {}", msg.author.tag(), e);
                     let fallback_message = if e.to_string().contains("timeout") {
-                        "Sorry, I'm taking too long to respond. Please try again!"
-                    } else if e.to_string().contains("API error") {
-                        "I'm having some technical difficulties right now. Please try again later!"
+                        "Request timed out. Please try again."
+                    } else if e.to_string().contains("API") {
+                        "I'm experiencing technical difficulties. Please try again later."
                     } else {
-                        "Sorry, I'm having trouble generating a response right now."
+                        "I'm having trouble processing your request right now."
                     };
-                    if let Err(e) = msg.reply(&http, fallback_message).await {
-                        error!("Failed to send fallback AI response: {}", e);
+                    
+                    if let Err(send_error) = msg.reply(&http, fallback_message).await {
+                        error!("Failed to send fallback response: {}", send_error);
                     }
                 }
             }
+        } else {
+            debug!("Not responding to message from {} (doesn't meet response criteria)", msg.author.tag());
         }
+    }
+
+    async fn guild_create(&self, _ctx: Context, guild: Guild, _is_new: bool) {
+        info!("Joined guild: {} (ID: {}, Members: {})", guild.name, guild.id, guild.member_count);
+    }
+
+    async fn guild_delete(&self, _ctx: Context, incomplete: UnavailableGuild, _full: Option<Guild>) {
+        info!("Left guild: {}", incomplete.id);
     }
 }
