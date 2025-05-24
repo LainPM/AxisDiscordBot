@@ -1,10 +1,10 @@
 use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use tracing::info;
+use tracing::{info, error}; // Added error to tracing imports
 use crate::bot::ShardManagerContainer; // Added for ShardManagerContainer
-use serenity::gateway::ShardManager; // Added for ShardManager (though might be transitively included)
-use serenity::client::bridge::gateway::ShardId; // Added for ShardId
+// serenity::gateway::ShardManager import removed as it's not directly used.
+use serenity::model::id::ShardId; // Corrected ShardId import path
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
     info!("Ping command executed by {}", command.user.tag());
@@ -30,8 +30,8 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
         let runners_lock = shard_manager_arc.runners.lock().await;
         
         // Get the latency for the current shard
-        // ctx.shard_id is u64, ShardId constructor takes u64
-        runners_lock.get(&ShardId(ctx.shard_id))
+        // ctx.shard_id is u64. The runners map uses u64 as keys directly.
+        runners_lock.get(&ctx.shard_id)
             .and_then(|runner_info| runner_info.latency)
             .map(|latency_duration| format!("{}ms", latency_duration.as_millis()))
             .unwrap_or_else(|| "N/A".to_string())
