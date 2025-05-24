@@ -14,7 +14,3 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "5.5"
-
-# Build-time dependencies for version info
-[build-dependencies]
-vergen = { version = "8.0", features = ["build", "cargo", "rustc"] }
