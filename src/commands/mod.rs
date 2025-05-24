@@ -2,7 +2,6 @@ use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, C
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use tracing::info;
-use crate::bot::ShardManagerContainer;
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
     info!("Ping command executed by {}", command.user.tag());
