@@ -2,6 +2,9 @@ use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, C
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use tracing::info;
+use crate::bot::ShardManagerContainer; // Added for ShardManagerContainer
+use serenity::gateway::ShardManager; // Added for ShardManager (though might be transitively included)
+use serenity::client::bridge::gateway::ShardId; // Added for ShardId
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
     info!("Ping command executed by {}", command.user.tag());
@@ -13,16 +16,32 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
     let duration = start.elapsed();
     let api_latency = duration.as_millis();
 
-    let ws_latency_str = match ctx.shard.latency() {
-        Some(latency) => format!("{}ms", latency.as_millis()),
-        None => "N/A".to_string(),
+    let ws_latency_str = {
+        let data_read = ctx.data.read().await;
+        // Retrieve the ShardManager from context data
+        let shard_manager_arc = data_read.get::<ShardManagerContainer>()
+            .cloned() // Clone the Arc<ShardManager>
+            .ok_or_else(|| {
+                error!("ShardManagerContainer not found in TypeMap");
+                serenity::Error::Other("ShardManagerContainer not found in TypeMap")
+            })?;
+        
+        // Lock the runners map
+        let runners_lock = shard_manager_arc.runners.lock().await;
+        
+        // Get the latency for the current shard
+        // ctx.shard_id is u64, ShardId constructor takes u64
+        runners_lock.get(&ShardId(ctx.shard_id))
+            .and_then(|runner_info| runner_info.latency)
+            .map(|latency_duration| format!("{}ms", latency_duration.as_millis()))
+            .unwrap_or_else(|| "N/A".to_string())
     };
     
     info!("Ping result - API: {}ms, Gateway: {}", api_latency, ws_latency_str);
 
     let embed = CreateEmbed::new()
         .field("API Latency", format!("{}ms", api_latency), true)
-        .field("Gateway Latency", ws_latency_str, true) // Changed field name for clarity
+        .field("Gateway Latency", ws_latency_str, true)
         .color(0x5865F2);
 
     command.edit_response(&http, EditInteractionResponse::new().embed(embed)).await?;
