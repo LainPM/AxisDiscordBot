@@ -1,5 +1,5 @@
 use serenity::async_trait;
-use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, CreateEmbed};
+use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
 use serenity::client::{Context, EventHandler};
 use serenity::model::gateway::Ready;
 use serenity::model::id::{ChannelId, UserId};
@@ -8,7 +8,6 @@ use serenity::prelude::*;
 use std::sync::Arc;
 use dashmap::DashMap;
 use tracing::{error, info, debug};
-use chrono::Utc;
 
 use crate::ai::GeminiClient;
 use crate::commands;
