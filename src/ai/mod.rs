@@ -38,22 +38,16 @@ impl GeminiClient {
 
         // Get nickname and member info if in a guild
         if let Some(guild_id) = guild_id {
-            if let Ok(member) = guild_id.member(&ctx.http, user.id).await {
-                if let Some(nick) = &member.nick {
-                    user_info.push_str(&format!("\nNickname: {}", nick));
-                }
-                
-                // Try to get user profile for bio
-                match ctx.http.get_user_profile(user.id).await {
-                    Ok(profile) => {
-                        if let Some(bio) = profile.bio {
-                            if !bio.is_empty() {
-                                user_info.push_str(&format!("\nBio: {}", bio));
-                            }
-                        }
-                    },
-                    Err(_) => debug!("Could not fetch user profile for bio")
-                }
+            match guild_id.member(&ctx.http, user.id).await {
+                Ok(member) => {
+                    if let Some(nick) = &member.nick {
+                        user_info.push_str(&format!("\nNickname: {}", nick));
+                    }
+                    
+                    // Note: User bio/profile info is not easily accessible via standard bot APIs
+                    // This would require special Discord permissions and may not work for most bots
+                },
+                Err(e) => debug!("Could not fetch member info: {}", e)
             }
         }
 
@@ -81,7 +75,8 @@ impl GeminiClient {
             - When providing code examples, use proper Luau syntax\n\
             - If you don't know something, state it directly rather than guessing\n\
             - Address the user by their username when appropriate\n\
-            - You can reference user information like their avatar, nickname, user ID, or bio when relevant\n\n\
+            - You can reference user information like their avatar, nickname, and user ID when relevant\n\
+            - Note: User bio information is not currently available through the bot API\n\n\
             Current user information:\n{}\n\n\
             User message: {}",
             user_info, prompt
