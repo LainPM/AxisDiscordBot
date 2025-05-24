@@ -2,7 +2,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use anyhow::{Result, Context};
 use dashmap::DashMap;
-use serenity::model::id::{ChannelId, UserId};
+use serenity::model::id::{ChannelId, UserId, GuildId};
+use serenity::model::prelude::User;
 use std::sync::Arc;
 use tracing::{error, debug, info};
 
@@ -22,17 +23,50 @@ impl GeminiClient {
         }
     }
 
-    pub async fn generate_response(&self, prompt: &str, user: &serenity::model::prelude::User) -> Result<String> {
+    async fn get_user_info(&self, user: &User, guild_id: Option<GuildId>, ctx: &serenity::prelude::Context) -> String {
+        let mut user_info = format!(
+            "Username: {}\nUser ID: {}\nDisplay Name: {}",
+            user.tag(),
+            user.id,
+            user.global_name.as_ref().unwrap_or(&user.name)
+        );
+
+        // Get avatar URL
+        if let Some(avatar_url) = user.avatar_url() {
+            user_info.push_str(&format!("\nAvatar: {}", avatar_url));
+        }
+
+        // Get nickname and member info if in a guild
+        if let Some(guild_id) = guild_id {
+            if let Ok(member) = guild_id.member(&ctx.http, user.id).await {
+                if let Some(nick) = &member.nick {
+                    user_info.push_str(&format!("\nNickname: {}", nick));
+                }
+                
+                // Try to get user profile for bio
+                match ctx.http.get_user_profile(user.id).await {
+                    Ok(profile) => {
+                        if let Some(bio) = profile.bio {
+                            if !bio.is_empty() {
+                                user_info.push_str(&format!("\nBio: {}", bio));
+                            }
+                        }
+                    },
+                    Err(_) => debug!("Could not fetch user profile for bio")
+                }
+            }
+        }
+
+        user_info
+    }
+
+    pub async fn generate_response(&self, prompt: &str, user: &User, guild_id: Option<GuildId>, ctx: &serenity::prelude::Context) -> Result<String> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
             self.api_key
         );
 
-        let user_info = format!(
-            "Username: {}, User ID: {}",
-            user.tag(),
-            user.id
-        );
+        let user_info = self.get_user_info(user, guild_id, ctx).await;
 
         let system_prompt = format!(
             "You are Axis, a professional Discord bot designed specifically for Roblox development assistance. \
@@ -46,8 +80,9 @@ impl GeminiClient {
             - Keep responses under 2000 characters due to Discord limits\n\
             - When providing code examples, use proper Luau syntax\n\
             - If you don't know something, state it directly rather than guessing\n\
-            - Address the user by their username when appropriate\n\n\
-            Current user information: {}\n\n\
+            - Address the user by their username when appropriate\n\
+            - You can reference user information like their avatar, nickname, user ID, or bio when relevant\n\n\
+            Current user information:\n{}\n\n\
             User message: {}",
             user_info, prompt
         );
@@ -60,7 +95,7 @@ impl GeminiClient {
             }],
             "generationConfig": {
                 "temperature": 0.3,
-                "topK": 20,
+                "topK": 20,  
                 "topP": 0.8,
                 "maxOutputTokens": 1000,
             },
@@ -123,186 +158,91 @@ impl GeminiClient {
         }
     }
 
-    pub async fn should_stop_conversation(&self, message: &str, user: &serenity::model::prelude::User) -> Result<bool> {
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
-            self.api_key
-        );
+    pub fn should_stop_conversation(&self, message: &str) -> bool {
+        let content_lower = message.to_lowercase().trim();
+        
+        // More reliable pattern matching for conversation endings
+        let stop_patterns = [
+            "bye", "goodbye", "see ya", "see you", "cya", "later",
+            "that's all", "thats all", "i'm done", "im done", "done",
+            "thanks that's all", "thanks thats all", "thank you that's all",
+            "no more questions", "stop", "quit", "exit", "leave me alone",
+            "end conversation", "nevermind", "never mind", "forget it"
+        ];
 
-        let user_info = format!(
-            "Username: {}, User ID: {}",
-            user.tag(),
-            user.id
-        );
-
-        let system_prompt = format!(
-            "Analyze the following message to determine if the user wants to end the conversation. \
-            Consider context clues like:\n\
-            - Explicit goodbye statements (bye, goodbye, see you later, thanks that's all, etc.)\n\
-            - Statements indicating they're done (that's all, I'm finished, no more questions, done, etc.)\n\
-            - Thank you messages that seem final (thanks, thank you with no follow-up question)\n\
-            - Clear dismissal statements (stop, quit, exit, leave, etc.)\n\n\
-            User info: {}\n\
-            Message to analyze: {}\n\n\
-            Respond with only 'YES' if they want to end the conversation, or 'NO' if they want to continue.",
-            user_info, message
-        );
-
-        let payload = json!({
-            "contents": [{
-                "parts": [{
-                    "text": system_prompt
-                }]
-            }],
-            "generationConfig": {
-                "temperature": 0.1,
-                "topK": 1,
-                "topP": 0.1,
-                "maxOutputTokens": 10,
-            }
+        let explicit_stops = stop_patterns.iter().any(|&pattern| {
+            content_lower == pattern || 
+            content_lower.starts_with(&format!("{} ", pattern)) ||
+            content_lower.ends_with(&format!(" {}", pattern))
         });
 
-        debug!("Analyzing conversation termination intent");
+        // Check for final thanks without questions
+        let is_final_thanks = (content_lower.contains("thank") || content_lower.contains("thx") || content_lower.contains(" ty ")) 
+            && !content_lower.contains("?") 
+            && !content_lower.contains("how") 
+            && !content_lower.contains("what") 
+            && !content_lower.contains("can you")
+            && !content_lower.contains("help")
+            && content_lower.len() < 50; // Short thanks messages
 
-        let response = self.client
-            .post(&url)
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(8))
-            .send()
-            .await
-            .context("Failed to send conversation analysis request")?;
-
-        if !response.status().is_success() {
-            debug!("Conversation analysis API call failed, defaulting to continue");
-            return Ok(false);
-        }
-
-        let json: Value = response.json().await
-            .context("Failed to parse conversation analysis response")?;
-
-        let response_text = json["candidates"]
-            .get(0)
-            .and_then(|candidate| candidate["content"]["parts"].get(0))
-            .and_then(|part| part["text"].as_str())
-            .unwrap_or("NO")
-            .trim()
-            .to_uppercase();
-
-        let should_stop = response_text == "YES";
-        debug!("Conversation termination analysis result: {}", should_stop);
-        
-        Ok(should_stop)
+        debug!("Stop conversation analysis - explicit: {}, final_thanks: {}", explicit_stops, is_final_thanks);
+        explicit_stops || is_final_thanks
     }
 
-    pub async fn should_respond_to_message(
+    pub fn should_respond_to_message(
         &self,
         content: &str,
         bot_name: &str,
         author_id: UserId,
         channel_id: ChannelId,
         active_conversations: &Arc<DashMap<ChannelId, UserId>>,
-    ) -> Result<bool> {
+    ) -> bool {
         // If there's an active conversation with this user in this channel, always respond
         if let Some(active_user_id) = active_conversations.get(&channel_id) {
             if *active_user_id == author_id {
                 debug!("Responding due to active conversation with user {}", author_id);
-                return Ok(true);
+                return true;
             }
         }
 
-        // Use AI to determine if the message is directed at the bot
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
-            self.api_key
-        );
-
-        let system_prompt = format!(
-            "Analyze this message to determine if it's directed at a bot named '{}' or requesting help with Roblox development.\n\
-            Look for:\n\
-            - Direct mentions of the bot name ({})\n\
-            - Greetings directed at the bot (hey {}, hi {}, hello {}, etc.)\n\
-            - Requests for help or assistance\n\
-            - Questions about Roblox development, scripting, or game development\n\
-            - General programming or scripting questions\n\
-            - Questions that seem to be asking for technical assistance\n\n\
-            Message: {}\n\n\
-            Respond with only 'YES' if the bot should respond, or 'NO' if it should not.",
-            bot_name, bot_name, bot_name, bot_name, bot_name, content
-        );
-
-        let payload = json!({
-            "contents": [{
-                "parts": [{
-                    "text": system_prompt
-                }]
-            }],
-            "generationConfig": {
-                "temperature": 0.1,
-                "topK": 1,
-                "topP": 0.1,
-                "maxOutputTokens": 10,
-            }
-        });
-
-        debug!("Analyzing message intent for response decision");
-
-        let response = self.client
-            .post(&url)
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<Value>().await {
-                    Ok(json) => {
-                        let response_text = json["candidates"]
-                            .get(0)
-                            .and_then(|candidate| candidate["content"]["parts"].get(0))
-                            .and_then(|part| part["text"].as_str())
-                            .unwrap_or("NO")
-                            .trim()
-                            .to_uppercase();
-
-                        let should_respond = response_text == "YES";
-                        debug!("AI determined should_respond: {}", should_respond);
-                        Ok(should_respond)
-                    },
-                    Err(_) => {
-                        debug!("Failed to parse AI response, using fallback");
-                        Ok(self.fallback_should_respond(content, bot_name))
-                    }
-                }
-            },
-            _ => {
-                debug!("AI analysis failed, using fallback keyword detection");
-                Ok(self.fallback_should_respond(content, bot_name))
-            }
-        }
-    }
-
-    fn fallback_should_respond(&self, content: &str, bot_name: &str) -> bool {
-        let content_lower = content.to_lowercase().trim().to_string();
+        // Reliable keyword-based detection for new conversations
+        let content_lower = content.to_lowercase().trim();
         let bot_name_lower = bot_name.to_lowercase();
         
-        let triggers = [
-            format!("hey {}", bot_name_lower),
-            format!("hi {}", bot_name_lower),
-            format!("hello {}", bot_name_lower),
-            format!("{} help", bot_name_lower),
-            format!("help {}", bot_name_lower),
-            bot_name_lower.clone(),
-            "roblox".to_string(),
-            "luau".to_string(),
-            "script".to_string(),
-            "scripting".to_string(),
-            "help me".to_string(),
-            "can you".to_string(),
+        // Direct bot mentions and greetings
+        let direct_mentions = [
+            &bot_name_lower,
+            &format!("hey {}", bot_name_lower),
+            &format!("hi {}", bot_name_lower), 
+            &format!("hello {}", bot_name_lower),
+            &format!("{} help", bot_name_lower),
+            &format!("help {}", bot_name_lower),
         ];
+
+        // Roblox/development keywords
+        let dev_keywords = [
+            "roblox", "luau", "script", "scripting", "studio", "rbx", "remote event",
+            "remote function", "datastore", "leaderstats", "gui", "screengu",
+            "local script", "server script", "game development", "rbxasset"
+        ];
+
+        // Help request patterns
+        let help_patterns = [
+            "help me", "can you help", "i need help", "how do i", "how to",
+            "what is", "explain", "show me", "teach me", "can you",
+            "do you know", "question about"
+        ];
+
+        let has_direct_mention = direct_mentions.iter().any(|&mention| content_lower.contains(mention));
+        let has_dev_keyword = dev_keywords.iter().any(|&keyword| content_lower.contains(keyword));
+        let has_help_request = help_patterns.iter().any(|&pattern| content_lower.contains(pattern));
+
+        let should_respond = has_direct_mention || (has_help_request && has_dev_keyword) || 
+            (content_lower.len() > 10 && has_dev_keyword && content_lower.contains("?"));
+
+        debug!("Response decision - direct: {}, dev: {}, help: {}, result: {}", 
+               has_direct_mention, has_dev_keyword, has_help_request, should_respond);
         
-        let should_respond = triggers.iter().any(|trigger| content_lower.contains(trigger));
-        debug!("Fallback keyword detection result: {}", should_respond);
         should_respond
     }
 }
