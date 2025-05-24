@@ -20,10 +20,23 @@ impl GeminiClient {
         }
     }
 
-    pub async fn generate_response(&self, prompt: &str, user_info: &str) -> Result<String> {
+    pub async fn generate_response(&self, prompt: &str, user: &serenity::model::prelude::User) -> Result<String> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
             self.api_key
+        );
+
+        let user_info = format!(
+            "Username: {}, User ID: {}, Display Name: {}",
+            user.tag(),
+            user.id,
+            user.global_name.as_ref().unwrap_or(&user.name)
+        );
+
+        let user_info = format!(
+            "Username: {}, User ID: {}",
+            user.tag(),
+            user.id
         );
 
         let system_prompt = format!(
@@ -115,7 +128,7 @@ impl GeminiClient {
         }
     }
 
-    pub async fn should_stop_conversation(&self, message: &str, user_info: &str) -> Result<bool> {
+    pub async fn should_stop_conversation(&self, message: &str, user: &serenity::model::prelude::User) -> Result<bool> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
             self.api_key
