@@ -1,7 +1,7 @@
 use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use chrono::Utc;
+use serenity::model::Timestamp;
 use tracing::info;
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
@@ -33,7 +33,7 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
         .field("API Latency", format!("{}ms", api_latency), true)
         .field("WebSocket Latency", format!("{}ms", ws_latency), true)
         .field("Status", if api_latency < 100 { "Excellent" } else if api_latency < 300 { "Good" } else { "High" }, true)
-        .timestamp(Utc::now());
+        .timestamp(Timestamp::now());
     
     command.edit_response(&http, EditInteractionResponse::new().embed(embed)).await?;
     
@@ -110,7 +110,7 @@ pub async fn serverinfo(ctx: &Context, command: &CommandInteraction) -> Result<(
                 .field("🔒 Verification", verification_level_str, true)
                 .field("🆔 Server ID", format!("`{}`", server_id_str), false)
                 .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot"))
-                .timestamp(Utc::now());
+                .timestamp(Timestamp::now());
             
             let response = CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().embed(embed)
@@ -164,7 +164,7 @@ pub async fn membercount(ctx: &Context, command: &CommandInteraction) -> Result<
                 .field("🏠 Server", guild_name, false)
                 .field("📊 Total Members", format!("**{}** members", member_count), false)
                 .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot • Member Count"))
-                .timestamp(Utc::now());
+                .timestamp(Timestamp::now());
 
             let response = CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().embed(embed)
