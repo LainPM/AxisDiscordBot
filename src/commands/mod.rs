@@ -1,7 +1,6 @@
 use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use serenity::model::Timestamp;
 use tracing::info;
 use crate::bot::ShardManagerContainer;
 
@@ -95,8 +94,7 @@ pub async fn serverinfo(ctx: &Context, command: &CommandInteraction) -> Result<(
                 .field("💎 Boosters", boosters_str, true)
                 .field("🔒 Verification", verification_level_str, true)
                 .field("🆔 Server ID", format!("`{}`", server_id_str), false)
-                .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot"))
-                .timestamp(Timestamp::now());
+                .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot"));
             
             let response = CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().embed(embed)
@@ -149,8 +147,7 @@ pub async fn membercount(ctx: &Context, command: &CommandInteraction) -> Result<
                 .color(0x57F287)
                 .field("🏠 Server", guild_name, false)
                 .field("📊 Total Members", format!("**{}** members", member_count), false)
-                .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot • Member Count"))
-                .timestamp(Timestamp::now());
+                .footer(serenity::builder::CreateEmbedFooter::new("Axis Bot • Member Count"));
 
             let response = CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().embed(embed)
