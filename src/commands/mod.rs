@@ -7,20 +7,26 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
     info!("Ping command executed by {}", command.user.tag());
     let http = ctx.http.clone();
     let start = std::time::Instant::now();
-    
+
     command.defer(&http).await?;
-    
+
     let duration = start.elapsed();
     let api_latency = duration.as_millis();
+
+    let ws_latency_str = match ctx.shard.latency() {
+        Some(latency) => format!("{}ms", latency.as_millis()),
+        None => "N/A".to_string(),
+    };
     
-    info!("Ping result - API: {}ms", api_latency);
-    
+    info!("Ping result - API: {}ms, Gateway: {}", api_latency, ws_latency_str);
+
     let embed = CreateEmbed::new()
-        .description(format!("Latency: {}ms", api_latency))
+        .field("API Latency", format!("{}ms", api_latency), true)
+        .field("Gateway Latency", ws_latency_str, true) // Changed field name for clarity
         .color(0x5865F2);
-    
+
     command.edit_response(&http, EditInteractionResponse::new().embed(embed)).await?;
-    
+
     Ok(())
 }
 
