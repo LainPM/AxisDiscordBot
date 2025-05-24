@@ -7,7 +7,6 @@ use anyhow::Result;
 use bot::{Handler, ShardManagerContainer};
 use config::Config;
 use serenity::prelude::*;
-use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber;
 
