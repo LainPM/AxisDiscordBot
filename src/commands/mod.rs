@@ -3,24 +3,54 @@ use serenity::model::prelude::*;
 use serenity::prelude::*;
 use tracing::info;
 
-// src/commands/mod.rs
-pub mod ping;
-// (you can similarly split serverinfo.rs and membercount.rs  
-//  or just leave those two handlers here if you prefer)
+// src/commands/ping.rs
+use serenity::{
+    builder::CreateCommand,
+    model::prelude::*,
+    prelude::*,
+};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use crate::bot::ShardManagerContainer; // ← Your TypeMapKey from bot.rs
 
-use serenity::builder::CreateCommand;
-pub use ping::{ping as ping_command, register_ping};
+/// The actual handler for `/ping`
+pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
+    // 1) Pull the ShardManager out of ctx.data
+    let data_read = ctx.data.read().await;
+    let manager_lock = data_read
+        .get::<ShardManagerContainer>()
+        .expect("Expected ShardManager in TypeMap")
+        .clone();
+    drop(data_read);
 
-// If you kept serverinfo/membercount in mod.rs you’d `pub use` them here too.
-// e.g. `pub use serverinfo::serverinfo as serverinfo_command;`
+    // 2) Lock it and measure gateway latency
+    let manager = manager_lock.lock().await;
+    let gateway_ms = manager
+        .shards
+        .get(0)
+        .and_then(|shard| shard.latency())
+        .unwrap_or_default()
+        .as_millis();
 
-/// A helper to register all your slash commands in one go:
-pub fn all_commands() -> Vec<CreateCommand> {
-    vec![
-        register_ping(),
-        // register_serverinfo(),
-        // register_membercount(),
-    ]
+    // 3) Measure REST latency (defer + edit)
+    let rest_start = std::time::Instant::now();
+    command.defer(&ctx.http).await?;
+    let rest_ms = rest_start.elapsed().as_millis();
+
+    // 4) Edit the deferred response with both numbers
+    command
+        .edit_response(&ctx.http, |resp| {
+            resp.content(format!("Gateway: {}ms\nREST:    {}ms", gateway_ms, rest_ms))
+        })
+        .await?;
+
+    Ok(())
+}
+
+/// How this command shows up to Discord when you register it
+pub fn register_ping() -> CreateCommand {
+    CreateCommand::new("ping")
+        .description("Check the bot's latency")
 }
 
 
