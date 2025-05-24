@@ -6,6 +6,8 @@ use serenity::model::id::{ChannelId, UserId};
 use std::sync::Arc;
 use tracing::{error, debug, info};
 
+pub mod intents;
+
 pub struct GeminiClient {
     client: Client,
     api_key: String,
@@ -24,13 +26,6 @@ impl GeminiClient {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
             self.api_key
-        );
-
-        let user_info = format!(
-            "Username: {}, User ID: {}, Display Name: {}",
-            user.tag(),
-            user.id,
-            user.global_name.as_ref().unwrap_or(&user.name)
         );
 
         let user_info = format!(
@@ -132,6 +127,12 @@ impl GeminiClient {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
             self.api_key
+        );
+
+        let user_info = format!(
+            "Username: {}, User ID: {}",
+            user.tag(),
+            user.id
         );
 
         let system_prompt = format!(
