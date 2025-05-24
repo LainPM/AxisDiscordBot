@@ -4,23 +4,26 @@ use serenity::prelude::*;
 use tracing::info;
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
-    info!("Ping command executed by {}", command.user.tag());
-    let http = ctx.http.clone();
-    let start = std::time::Instant::now();
-    
-    command.defer(&http).await?;
-    
-    let duration = start.elapsed();
-    let api_latency = duration.as_millis();
-    
-    info!("Ping result - API: {}ms", api_latency);
-    
-    let embed = CreateEmbed::new()
-        .description(format!("Latency: {}ms", api_latency))
-        .color(0x5865F2);
-    
-    command.edit_response(&http, EditInteractionResponse::new().embed(embed)).await?;
-    
+    // 1) Gateway latency (heartbeat)
+    let shard_manager = ctx.shard_manager.clone();
+    let gateway_latency = {
+        let managers = shard_manager.lock().await;
+        managers.shards[0].latency().unwrap_or_default().as_millis()
+    };
+
+    // 2) REST latency (defer + edit)
+    let rest_start = std::time::Instant::now();
+    command.defer(&ctx.http).await?;
+    let rest_latency = rest_start.elapsed().as_millis();
+
+    // 3) Edit the deferred response
+    command.edit_response(&ctx.http, |resp| {
+        resp.content(format!(
+            "Gateway: {}ms\nREST:    {}ms",
+            gateway_latency, rest_latency
+        ))
+    }).await?;
+
     Ok(())
 }
 
