@@ -154,7 +154,8 @@ impl GeminiClient {
     }
 
     pub fn should_stop_conversation(&self, message: &str) -> bool {
-        let content_lower = message.to_lowercase().trim();
+        let message_lower = message.to_lowercase();
+        let content_lower = message_lower.trim();
         
         // More reliable pattern matching for conversation endings
         let stop_patterns = [
@@ -201,7 +202,8 @@ impl GeminiClient {
         }
 
         // Reliable keyword-based detection for new conversations
-        let content_lower = content.to_lowercase().trim();
+        let content_lower_string = content.to_lowercase();
+        let content_lower = content_lower_string.trim();
         let bot_name_lower = bot_name.to_lowercase();
         
         // Direct bot mentions and greetings
