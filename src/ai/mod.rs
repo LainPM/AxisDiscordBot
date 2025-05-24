@@ -5,22 +5,30 @@ use dashmap::DashMap;
 use serenity::model::id::{ChannelId, UserId, GuildId};
 use serenity::model::prelude::User;
 use std::sync::Arc;
+use tokio::sync::RwLock; // Added for async RwLock
 use tracing::{error, debug, info};
 
+// Assuming these are now correctly pathed after previous subtasks
+use crate::ai::config::{AiConfiguration, AiMode}; 
+
 pub mod intents;
+pub mod config; 
 
 #[derive(Clone)]
 pub struct GeminiClient {
     client: Client,
     api_key: String,
+    pub config_store: Arc<RwLock<AiConfiguration>>, // Added config_store
 }
 
 impl GeminiClient {
-    pub fn new(api_key: String) -> Self {
+    // Updated new method
+    pub fn new(api_key: String, config_store: Arc<RwLock<AiConfiguration>>) -> Self {
         info!("Initializing Gemini AI client");
         Self {
             client: Client::new(),
             api_key,
+            config_store, // Initialize the new field
         }
     }
 
@@ -185,18 +193,47 @@ impl GeminiClient {
         explicit_stops || is_final_thanks
     }
 
-    pub fn should_respond_to_message(
+    // Modified should_respond_to_message
+    pub async fn should_respond_to_message(
         &self,
         content: &str,
         bot_name: &str,
         author_id: UserId,
         channel_id: ChannelId,
+        guild_id: Option<GuildId>, // Added guild_id
         active_conversations: &Arc<DashMap<ChannelId, UserId>>,
     ) -> bool {
+        if let Some(gid) = guild_id {
+            let config_store_locked = self.config_store.read().await;
+            let guild_config = config_store_locked.get_guild_config(&gid);
+            // drop(config_store_locked) // Not strictly needed as it goes out of scope
+
+            match guild_config.mode {
+                AiMode::Off => {
+                    debug!("AI is Off for guild {}. Not responding.", gid);
+                    return false;
+                }
+                AiMode::Specific => {
+                    if !guild_config.allowed_ids.iter().any(|id_str| id_str == &channel_id.to_string()) {
+                        debug!("Channel {} not in allowed_ids for guild {}. Not responding.", channel_id, gid);
+                        return false;
+                    }
+                    debug!("Channel {} is allowed for specific mode in guild {}. Proceeding with checks.", channel_id, gid);
+                }
+                AiMode::Global => {
+                    debug!("AI is Global for guild {}. Proceeding with checks.", gid);
+                }
+            }
+        } else {
+            debug!("No guild_id provided (likely DM). Proceeding with default checks.");
+        }
+
+        // --- Existing logic starts here, now conditional on config checks ---
+
         // If there's an active conversation with this user in this channel, always respond
         if let Some(active_user_id) = active_conversations.get(&channel_id) {
             if *active_user_id == author_id {
-                debug!("Responding due to active conversation with user {}", author_id);
+                debug!("Responding due to active conversation with user {} (after config check)", author_id);
                 return true;
             }
         }

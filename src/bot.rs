@@ -5,12 +5,14 @@ use serenity::model::gateway::Ready;
 use serenity::model::id::{ChannelId, UserId};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use std::sync::Arc;
+use std::sync::Arc; // Existing import
 use dashmap::DashMap;
 use tracing::{error, info, debug};
 use std::time::{Duration, Instant};
 
 use crate::ai::GeminiClient;
+use crate::ai::config::AiConfiguration; // Added import
+use tokio::sync::RwLock; // Added import
 use crate::commands;
 use crate::config::Config;
 
@@ -50,9 +52,9 @@ pub struct Handler {
 }
 
 impl Handler {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, config_store: Arc<RwLock<AiConfiguration>>) -> Self {
         info!("Creating new Handler instance");
-        let gemini_client = GeminiClient::new(config.gemini_api_key.clone());
+        let gemini_client = GeminiClient::new(config.gemini_api_key.clone(), config_store);
         Self {
             config,
             gemini_client,
@@ -177,6 +179,7 @@ impl EventHandler for Handler {
                 commands::register_ping(),
                 commands::register_serverinfo(),
                 commands::register_membercount(),
+                commands::ai_config_cmd::register(), // Add this line
             ];
             
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -233,8 +236,9 @@ impl EventHandler for Handler {
                 &self.config.bot_name,
                 msg.author.id,
                 msg.channel_id,
-                &Arc::new(DashMap::new()),
-            )
+                msg.guild_id,                 // Added
+                &self.active_conversations    // Corrected
+            ).await                           // Added
         };
 
         if should_respond {

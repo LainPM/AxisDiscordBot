@@ -1,26 +1,62 @@
 use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use tracing::info;
+use tracing::{info, error}; // Added error to tracing imports
+use crate::bot::ShardManagerContainer; // Added for ShardManagerContainer
+// serenity::gateway::ShardManager import removed as it's not directly used.
+use serenity::model::id::ShardId; // Corrected ShardId import path
+
+pub mod ai_config_cmd; // Added new command module
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
     info!("Ping command executed by {}", command.user.tag());
     let http = ctx.http.clone();
     let start = std::time::Instant::now();
-    
+
     command.defer(&http).await?;
-    
+
     let duration = start.elapsed();
     let api_latency = duration.as_millis();
+
+    let ws_latency_str = {
+        let data_read = ctx.data.read().await;
+        // Retrieve the ShardManager from context data
+        let shard_manager_arc = data_read.get::<ShardManagerContainer>()
+            .cloned() // Clone the Arc<ShardManager>
+            .ok_or_else(|| {
+                error!("ShardManagerContainer not found in TypeMap");
+                serenity::Error::Other("ShardManagerContainer not found in TypeMap")
+            })?;
+        
+        // Lock the runners map
+        let runners_lock = shard_manager_arc.runners.lock().await;
+        
+        // Get the latency for the current shard
+        // ctx.shard_id is u64. The runners map uses u64 as keys directly.
+        let runner_info_opt = runners_lock.get(&ctx.shard_id);
+        info!("Shard ID: {}, Runner info found: {}", ctx.shard_id, runner_info_opt.is_some());
+
+        if let Some(runner) = runner_info_opt {
+            info!("Runner for shard {}: latency is {:?}", ctx.shard_id, runner.latency);
+            if let Some(latency_duration) = runner.latency {
+                format!("{}ms", latency_duration.as_millis())
+            } else {
+                "N/A".to_string()
+            }
+        } else {
+            "N/A".to_string()
+        }
+    };
     
-    info!("Ping result - API: {}ms", api_latency);
-    
+    info!("Ping result - API: {}ms, Gateway: {}", api_latency, ws_latency_str);
+
     let embed = CreateEmbed::new()
-        .description(format!("Latency: {}ms", api_latency))
+        .field("API Latency", format!("{}ms", api_latency), true)
+        .field("Gateway Latency", ws_latency_str, true)
         .color(0x5865F2);
-    
+
     command.edit_response(&http, EditInteractionResponse::new().embed(embed)).await?;
-    
+
     Ok(())
 }
 
@@ -168,7 +204,7 @@ pub async fn membercount(ctx: &Context, command: &CommandInteraction) -> Result<
 }
 
 pub fn register_ping() -> CreateCommand {
-    CreateCommand::new("ping").description("Check the bot's latency")
+    CreateCommand::new("ping").description("Checks the bot's API and Gateway latency.")
 }
 
 pub fn register_serverinfo() -> CreateCommand {
