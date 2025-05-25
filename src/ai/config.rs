@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serenity::model::id::GuildId;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, ErrorKind};
-use std::path::Path;
+// use std::path::Path; // Removed unused import
 use std::sync::Arc;
 use tokio::sync::RwLock; // Changed from std::sync::RwLock for async contexts if needed by Serenity TypeMap access
 
@@ -36,7 +36,7 @@ pub struct AiConfiguration {
     // Using DashMap for concurrent reads/writes if individual guild configs are frequently updated.
     // If config is mostly read and written entirely on save, HashMap might be simpler.
     // For now, DashMap is fine.
-    #[serde(with = "dashmap::serde::preserve_order")]
+    // #[serde(with = "dashmap::serde::preserve_order")] // Removed this line
     pub guilds: DashMap<GuildId, AiGuildConfig>,
 }
 
