@@ -6,6 +6,7 @@ pub struct Config {
     pub discord_token: String,
     pub gemini_api_key: String,
     pub bot_name: String,
+    pub mongo_uri: String, // Added mongo_uri field
 }
 
 impl Config {
@@ -17,11 +18,16 @@ impl Config {
             .context("GEMINI_API_KEY environment variable not set")?;
         
         let bot_name = env::var("BOT_NAME").unwrap_or_else(|_| "axis".to_string());
+
+        // Load MONGO_URI from environment
+        let mongo_uri = env::var("MONGO_URI")
+            .context("MONGO_URI environment variable not set")?;
         
         Ok(Config {
             discord_token,
             gemini_api_key,
             bot_name,
+            mongo_uri, // Added to struct instantiation
         })
     }
 }
