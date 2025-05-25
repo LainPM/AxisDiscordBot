@@ -4,7 +4,7 @@ use serenity::prelude::*;
 use tracing::{info, error}; // Added error to tracing imports
 use crate::bot::ShardManagerContainer; // Added for ShardManagerContainer
 // serenity::gateway::ShardManager import removed as it's not directly used.
-use serenity::model::id::ShardId; // Corrected ShardId import path
+// use serenity::model::id::ShardId; // Removed as per subtask, assuming compiler warning is correct for current code version
 
 pub mod ai_config_cmd; // Added new command module
 
