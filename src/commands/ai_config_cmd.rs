@@ -1,10 +1,12 @@
-use serenity::all::{CommandOptionType}; // Removed ResolvedOption, ResolvedValue
-use serenity::builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseFollowup};
-use serenity::model::application::{CommandInteraction, CommandOptionValue}; // Added CommandOptionValue
-use serenity::model::id::{ChannelId, GuildId};
+use serenity::all::CommandOptionType; // Removed ResolvedOption, ResolvedValue
+use serenity::builder::{CreateCommand, CreateCommandOption, CreateInteractionResponseFollowup}; // Removed CreateInteractionResponse
+// Corrected import path for CommandOptionValue:
+use serenity::model::application::CommandInteraction;
+use serenity::model::application::interaction::application_command::CommandOptionValue;
+use serenity::model::id::GuildId; // Removed ChannelId as it's not used as a type
 use serenity::model::permissions::Permissions;
 use serenity::prelude::*;
-use tracing::{debug, error, info};
+use tracing::{error, info}; // Removed debug as it's not used
 
 use crate::ai::config::{AiConfigStore, AiGuildConfig, AiMode}; // Assuming ai::config is now available
 
@@ -59,7 +61,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> Result<(), sere
                             } else if s.parse::<u64>().is_ok() { // Basic check if it's a plain ID
                                 Some(s.to_string())
                             } else {
-                                None 
+                                None
                             }
                         })
                         .collect();
